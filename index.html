@@ -719,17 +719,29 @@ function updateLocalTimer(room) {
     document.getElementById('timer-arc').style.strokeDashoffset = 188.5;
     return;
   }
+  if (!room.timerStartedAt) {
+    document.getElementById('timer-num').textContent = room.settings.timer;
+    document.getElementById('timer-arc').style.strokeDashoffset = 0;
+    return;
+  }
   const duration = room.settings.timer * 1000;
-  const elapsed = Date.now() - room.timerStartedAt;
-  let remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
 
   function tick() {
+    const elapsed = Date.now() - room.timerStartedAt;
+    let remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
     document.getElementById('timer-num').textContent = remaining;
     const frac = remaining / room.settings.timer;
     document.getElementById('timer-arc').style.strokeDashoffset = 188.5 * (1 - frac);
     document.getElementById('timer-arc').style.stroke = remaining <= 5 ? '#E53935' : S.accentColor;
-    if (remaining <= 0) { clearInterval(S.localTimerInterval); }
-    remaining--;
+    if (remaining <= 0) {
+      clearInterval(S.localTimerInterval);
+      api('GET', S.roomCode).then((fresh) => {
+        if (!fresh) return;
+        S.isSold = fresh.isSold;
+        S.participants = fresh.participants;
+        applyRoomToUI(fresh);
+      });
+    }
   }
   tick();
   S.localTimerInterval = setInterval(tick, 1000);
@@ -755,11 +767,15 @@ function startAuctionPoll() {
       S.isSold = room.isSold;
       applyRoomToUI(room);
     } else {
-      // Just update bid + sold state
+      // Just update bid, timer, and sold state
+      S.participants = room.participants;
       document.getElementById('current-bid-val').textContent = fmt(room.currentBid);
       const bidder = room.participants.find(pt=>pt.id===room.currentBidderId);
       document.getElementById('current-bidder-name').textContent = bidder ? bidder.name+(bidder.id===S.myId?' (You)':'') : '—';
-      if (room.isSold !== S.isSold) { S.isSold = room.isSold; applyRoomToUI(room); }
+      if (room.isSold !== S.isSold) {
+        S.isSold = room.isSold;
+        applyRoomToUI(room);
+      }
       const me = room.participants.find(pt=>pt.id===S.myId)||room.participants[0];
       document.getElementById('my-budget-display').textContent = fmt(me?.budget||0);
       document.getElementById('host-next-btn').style.display = (S.isHost && room.isSold) ? 'block' : 'none';

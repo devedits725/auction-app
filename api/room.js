@@ -4,7 +4,35 @@
 
 const rooms = {};
 
-export default function handler(req, res) {
+function autoSellIfExpired(room) {
+  if (room.phase !== 'auction' || room.isSold || !room.timerStartedAt) return false;
+  const duration = (room.settings?.timer || 30) * 1000;
+  if (Date.now() - room.timerStartedAt < duration) return false;
+
+  room.isSold = true;
+  if (room.currentBidderId) {
+    const winner = room.participants.find((p) => p.id === room.currentBidderId);
+    if (winner) {
+      winner.budget -= room.currentBid;
+      winner.squad = winner.squad || [];
+      const player = room.auctionQueue[room.currentIdx];
+      winner.squad.push({
+        name: player?.name,
+        pos: player?.pos,
+        price: room.currentBid,
+      });
+    }
+    const player = room.auctionQueue[room.currentIdx];
+    if (player) {
+      player.sold = true;
+      player.soldTo = winner?.name;
+      player.soldPrice = room.currentBid;
+    }
+  }
+  return true;
+}
+
+module.exports = function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -14,9 +42,10 @@ export default function handler(req, res) {
   const { code } = req.query;
   if (!code) return res.status(400).json({ error: 'Room code required' });
 
-  // GET — fetch room state
+  // GET — fetch room state (also auto-sells when bid timer expires)
   if (req.method === 'GET') {
     if (!rooms[code]) return res.status(404).json({ error: 'Room not found' });
+    autoSellIfExpired(rooms[code]);
     return res.status(200).json(rooms[code]);
   }
 
@@ -34,7 +63,7 @@ export default function handler(req, res) {
         settings: body.settings,
         participants: body.participants,
         roster: body.roster,
-        phase: 'lobby', // lobby | auction | complete
+        phase: 'lobby',
         auctionQueue: [],
         currentIdx: 0,
         currentBid: 0,
@@ -49,9 +78,18 @@ export default function handler(req, res) {
 
     if (body.action === 'join') {
       if (!rooms[code]) return res.status(404).json({ error: 'Room not found' });
-      const already = rooms[code].participants.find(p => p.id === body.participant.id);
-      if (!already) rooms[code].participants.push(body.participant);
-      return res.status(200).json(rooms[code]);
+      const room = rooms[code];
+      const p = body.participant;
+      if (!p) return res.status(400).json({ error: 'Participant required' });
+      const already = room.participants.find((x) => x.id === p.id);
+      if (!already) {
+        room.participants.push({
+          ...p,
+          budget: room.settings?.budget ?? 5000,
+          squad: p.squad || [],
+        });
+      }
+      return res.status(200).json(room);
     }
 
     if (body.action === 'update') {
@@ -63,11 +101,32 @@ export default function handler(req, res) {
     if (body.action === 'bid') {
       if (!rooms[code]) return res.status(404).json({ error: 'Room not found' });
       const room = rooms[code];
+      if (room.isSold) return res.status(400).json({ error: 'Player already sold' });
+      autoSellIfExpired(room);
+      if (room.isSold) return res.status(200).json(room);
+
       const { bidderId, amount, bidderName } = body;
-      if (amount <= room.currentBid) return res.status(400).json({ error: 'Bid too low' });
+      const minBid = room.currentBid + (room.settings?.increment || 100);
+      if (amount < minBid) {
+        return res.status(400).json({ error: `Bid must be at least ${minBid}` });
+      }
+      const bidder = room.participants.find((p) => p.id === bidderId);
+      if (!bidder) return res.status(400).json({ error: 'Bidder not found' });
+      if (amount > bidder.budget) {
+        return res.status(400).json({ error: 'Not enough budget' });
+      }
+      if ((bidder.squad || []).length >= (room.settings?.maxPlayers || 5)) {
+        return res.status(400).json({ error: 'Team is full' });
+      }
+
       room.currentBid = amount;
       room.currentBidderId = bidderId;
-      room.bidLog.unshift({ player: room.auctionQueue[room.currentIdx]?.name, bidder: bidderName, amount, ts: Date.now() });
+      room.bidLog.unshift({
+        player: room.auctionQueue[room.currentIdx]?.name,
+        bidder: bidderName,
+        amount,
+        ts: Date.now(),
+      });
       room.timerStartedAt = Date.now();
       return res.status(200).json(room);
     }
@@ -75,24 +134,14 @@ export default function handler(req, res) {
     if (body.action === 'sell') {
       if (!rooms[code]) return res.status(404).json({ error: 'Room not found' });
       const room = rooms[code];
-      room.isSold = true;
-      if (room.currentBidderId) {
-        const winner = room.participants.find(p => p.id === room.currentBidderId);
-        if (winner) {
-          winner.budget -= room.currentBid;
-          winner.squad = winner.squad || [];
-          const player = room.auctionQueue[room.currentIdx];
-          winner.squad.push({ name: player?.name, pos: player?.pos, price: room.currentBid });
-        }
-        const player = room.auctionQueue[room.currentIdx];
-        if (player) { player.sold = true; player.soldTo = winner?.name; player.soldPrice = room.currentBid; }
-      }
+      if (!room.isSold) autoSellIfExpired(room);
       return res.status(200).json(room);
     }
 
     if (body.action === 'next') {
       if (!rooms[code]) return res.status(404).json({ error: 'Room not found' });
       const room = rooms[code];
+      if (!room.isSold) autoSellIfExpired(room);
       room.currentIdx += 1;
       room.currentBid = room.auctionQueue[room.currentIdx]?.base || 0;
       room.currentBidderId = null;
@@ -111,8 +160,12 @@ export default function handler(req, res) {
       room.currentBid = room.auctionQueue[0]?.base || 0;
       room.currentBidderId = null;
       room.isSold = false;
+      room.bidLog = [];
       room.timerStartedAt = Date.now();
-      room.participants.forEach(p => { p.budget = room.settings.budget; p.squad = []; });
+      room.participants.forEach((p) => {
+        p.budget = room.settings.budget;
+        p.squad = [];
+      });
       return res.status(200).json(room);
     }
 
@@ -120,4 +173,4 @@ export default function handler(req, res) {
   }
 
   return res.status(405).json({ error: 'Method not allowed' });
-}
+};
