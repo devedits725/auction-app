@@ -109,12 +109,17 @@
   .current-bid-val { font-family: var(--font-display); font-size: 52px; color: var(--gold); line-height: 1; margin-bottom: 4px; transition: transform 0.2s; }
   .current-bidder { font-size: 14px; color: var(--muted); margin-bottom: 20px; }
   .current-bidder span { color: var(--text); font-weight: 500; }
-  .bid-input-row { display: flex; gap: 10px; margin-bottom: 12px; }
-  .bid-input { flex: 1; background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; padding: 14px; color: var(--text); font-family: var(--font-mono); font-size: 18px; outline: none; text-align: center; }
+  .bid-increment-label { font-size: 12px; color: var(--muted); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 10px; }
+  .quick-bids { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 14px; }
+  @media(min-width:500px){ .quick-bids { grid-template-columns: repeat(4, 1fr); } }
+  .quick-bid-btn { padding: 14px 10px; background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 15px; font-family: var(--font-mono); font-weight: 600; cursor: pointer; transition: all 0.15s; text-align: center; }
+  .quick-bid-btn:hover { border-color: var(--gold); color: var(--gold); background: rgba(245,166,35,0.08); transform: translateY(-1px); }
+  .quick-bid-btn:active { transform: scale(0.98); }
+  .quick-bid-btn .bid-result { display: block; font-size: 11px; font-weight: 400; color: var(--muted); margin-top: 4px; }
+  .bid-input-row { display: flex; gap: 10px; }
+  .bid-input { flex: 1; background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; padding: 14px; color: var(--text); font-family: var(--font-mono); font-size: 16px; outline: none; text-align: center; }
   .bid-input:focus { border-color: var(--gold); }
-  .quick-bids { display: flex; gap: 8px; flex-wrap: wrap; }
-  .quick-bid-btn { padding: 8px 14px; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; font-family: var(--font-mono); cursor: pointer; transition: all 0.15s; }
-  .quick-bid-btn:hover { border-color: var(--gold); color: var(--gold); }
+  .bid-custom-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; letter-spacing: 1px; }
   .timer-display { width: 70px; height: 70px; position: relative; flex-shrink:0; }
   .timer-svg { transform: rotate(-90deg); }
   .timer-track { fill: none; stroke: var(--bg4); stroke-width: 6; }
@@ -345,11 +350,15 @@
             </div>
           </div>
           <div id="sold-status" style="margin-top:12px;display:none"></div>
-          <div class="bid-input-row" id="bid-controls">
-            <input type="number" class="bid-input" id="bid-amount-input" placeholder="Enter bid">
-            <button class="btn btn-gold" style="width:auto;padding:14px 24px" onclick="placeBid()">BID ↑</button>
+          <div id="bid-controls">
+            <div class="bid-increment-label">Raise bid by</div>
+            <div class="quick-bids" id="quick-bid-btns"></div>
+            <div class="bid-custom-label">Or enter a custom raise</div>
+            <div class="bid-input-row">
+              <input type="number" class="bid-input" id="bid-increment-input" placeholder="e.g. 150" min="1">
+              <button class="btn btn-gold" style="width:auto;padding:14px 24px" onclick="placeBidFromIncrement()">BID ↑</button>
+            </div>
           </div>
-          <div class="quick-bids" id="quick-bid-btns"></div>
         </div>
       </div>
     </div>
@@ -398,6 +407,7 @@ let S = {
   localTimerSeconds: 30,
   pollInterval: null,
   lastBidLogLen: 0,
+  currentBid: 0,
   isSold: false,
   accentColor: '#F5A623',
   curSideTab: 'teams',
@@ -672,6 +682,7 @@ function applyRoomToUI(room) {
   statsEl.innerHTML = keys.map(k=>`<div class="stat-block"><div class="stat-val">${p.stats[k]}</div><div class="stat-lbl">${k}</div></div>`).join('');
 
   // Bid
+  S.currentBid = room.currentBid;
   document.getElementById('current-bid-val').textContent = fmt(room.currentBid);
   const bidder = room.participants.find(pt=>pt.id===room.currentBidderId);
   const bidderName = bidder ? bidder.name + (bidder.id===S.myId?' (You)':'') : '—';
@@ -689,12 +700,8 @@ function applyRoomToUI(room) {
     document.getElementById('quick-bid-btns').innerHTML = '';
   } else {
     soldEl.style.display = 'none';
-    document.getElementById('bid-controls').style.display = 'flex';
-    const me = room.participants.find(pt=>pt.id===S.myId)||room.participants[0];
-    document.getElementById('bid-amount-input').value = room.currentBid + room.settings.increment;
-    const qb = document.getElementById('quick-bid-btns');
-    const inc = room.settings.increment;
-    qb.innerHTML = [1,2,5,10].map(m=>`<button class="quick-bid-btn" onclick="quickBid(${m*inc})">+${fmt(m*inc)}</button>`).join('');
+    document.getElementById('bid-controls').style.display = 'block';
+    renderQuickBidButtons(room);
   }
 
   // Timer — driven from server timerStartedAt
@@ -758,6 +765,7 @@ function startAuctionPoll() {
       S.lastBidLogLen = room.bidLog.length;
       document.getElementById('current-bid-val').classList.add('highlight-bid');
       setTimeout(()=>document.getElementById('current-bid-val').classList.remove('highlight-bid'), 400);
+      renderQuickBidButtons(room);
     }
     // Detect phase change
     if (room.phase === 'complete') { clearInterval(S.pollInterval); clearInterval(S.localTimerInterval); enterComplete(room); return; }
@@ -769,6 +777,7 @@ function startAuctionPoll() {
     } else {
       // Just update bid, timer, and sold state
       S.participants = room.participants;
+      S.currentBid = room.currentBid;
       document.getElementById('current-bid-val').textContent = fmt(room.currentBid);
       const bidder = room.participants.find(pt=>pt.id===room.currentBidderId);
       document.getElementById('current-bidder-name').textContent = bidder ? bidder.name+(bidder.id===S.myId?' (You)':'') : '—';
@@ -784,24 +793,48 @@ function startAuctionPoll() {
   }, POLL_INTERVAL);
 }
 
-// ─── BID ──────────────────────────────────────────────────────────────────────
-async function placeBid() {
-  if (S.isSold) return;
-  const me = S.participants.find(p=>p.id===S.myId)||S.participants[0];
-  const input = parseInt(document.getElementById('bid-amount-input').value);
-  if (isNaN(input)) { showToast('Enter a valid amount'); return; }
-  if (input > me.budget) { showToast('Not enough budget!'); return; }
-  if ((me.squad||[]).length >= S.settings.maxPlayers) { showToast('Team is full!'); return; }
-  const room = await api('POST', S.roomCode, {action:'bid', bidderId:S.myId, amount:input, bidderName:S.myName});
-  if (!room) return;
-  S.isSold = false;
-  applyRoomToUI(room);
+function renderQuickBidButtons(room) {
+  const qb = document.getElementById('quick-bid-btns');
+  if (!qb || room.isSold) return;
+  const inc = room.settings.increment;
+  const cur = room.currentBid;
+  qb.innerHTML = [1, 2, 5, 10].map((m) => {
+    const raise = m * inc;
+    return `<button type="button" class="quick-bid-btn" onclick="placeBidWithIncrement(${raise})">+${fmt(raise)}<span class="bid-result">→ ${fmt(cur + raise)}</span></button>`;
+  }).join('');
 }
 
-function quickBid(extra) {
-  const room_currentBid = parseInt(document.getElementById('current-bid-val').textContent.replace(/[^0-9]/g,''))||0;
-  document.getElementById('bid-amount-input').value = room_currentBid + extra;
-  placeBid();
+// ─── BID ──────────────────────────────────────────────────────────────────────
+function getCurrentBid() {
+  return S.currentBid || 0;
+}
+
+async function placeBidWithIncrement(raise) {
+  if (S.isSold) return;
+  const inc = parseInt(raise, 10);
+  if (!inc || inc < 1) { showToast('Enter a valid raise amount'); return; }
+  const minRaise = S.settings.increment || 100;
+  if (inc < minRaise) { showToast(`Minimum raise is ${fmt(minRaise)}`); return; }
+  const amount = getCurrentBid() + inc;
+  await submitBid(amount);
+}
+
+async function placeBidFromIncrement() {
+  const input = parseInt(document.getElementById('bid-increment-input').value, 10);
+  if (isNaN(input)) { showToast('Enter how much to raise by'); return; }
+  await placeBidWithIncrement(input);
+}
+
+async function submitBid(amount) {
+  if (S.isSold) return;
+  const me = S.participants.find(p => p.id === S.myId) || S.participants[0];
+  if (amount > me.budget) { showToast('Not enough budget!'); return; }
+  if ((me.squad || []).length >= S.settings.maxPlayers) { showToast('Team is full!'); return; }
+  const room = await api('POST', S.roomCode, { action: 'bid', bidderId: S.myId, amount, bidderName: S.myName });
+  if (!room) return;
+  document.getElementById('bid-increment-input').value = '';
+  S.isSold = false;
+  applyRoomToUI(room);
 }
 
 // ─── NEXT PLAYER ──────────────────────────────────────────────────────────────
@@ -912,7 +945,7 @@ function goToLanding() {
   clearInterval(S.localTimerInterval);
   clearInterval(S.pollInterval);
   clearSession();
-  S = { myId:null, myName:'', myTeam:'', isHost:false, roomCode:'', settings:{budget:5000,timer:30,increment:100,maxPlayers:5}, participants:[], roster:[], localTimerInterval:null, localTimerSeconds:30, pollInterval:null, lastBidLogLen:0, isSold:false, accentColor:'#F5A623', curSideTab:'teams' };
+  S = { myId:null, myName:'', myTeam:'', isHost:false, roomCode:'', settings:{budget:5000,timer:30,increment:100,maxPlayers:5}, participants:[], roster:[], localTimerInterval:null, localTimerSeconds:30, pollInterval:null, lastBidLogLen:0, currentBid:0, isSold:false, accentColor:'#F5A623', curSideTab:'teams' };
   setURL(null);
   document.documentElement.style.setProperty('--gold','#F5A623');
   showScreen('landing');
@@ -963,7 +996,7 @@ document.addEventListener('keydown', e => {
     if(document.getElementById('screen-landing').classList.contains('active')) {
       document.getElementById('tab-host').classList.contains('active') ? hostRoom() : joinRoom();
     }
-    if(document.getElementById('screen-auction').classList.contains('active') && !S.isSold) placeBid();
+    if(document.getElementById('screen-auction').classList.contains('active') && !S.isSold) placeBidFromIncrement();
   }
   if(e.key==='n' && S.isSold && S.isHost) nextPlayer();
 });
